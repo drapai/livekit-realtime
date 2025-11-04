@@ -7,17 +7,19 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     curl \
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install Python dependencies
-COPY requirements.txt .
+COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy source code
-COPY src/ ./src/
+COPY backend/agent/ ./backend/agent/
+COPY backend/api/ ./backend/api/
 
-# Set working directory for agent
-WORKDIR /app
+# Expose ports
+EXPOSE 8000
 
-# Run the agent
-CMD ["python", "src/agent.py", "start"]
+# Default command (can be overridden in docker-compose)
+CMD ["python", "backend/agent/agent.py", "dev"]

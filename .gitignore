@@ -61,3 +61,12 @@ models/
 *.pid
 *.sock
 *.tar
+
+# Unused TTS plugins (only keep edge and flite)
+src/plugins/tts_pyttsx3.py
+src/plugins/tts_espeak.py
+src/plugins/tts_simple.py
+
+# Test files
+test_*.py
+src/test_*.py

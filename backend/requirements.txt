@@ -1,0 +1,45 @@
+# Core LiveKit agent framework
+livekit-agents>=1.2.0
+
+# LiveKit plugins (VAD, turn detection, OpenAI)
+livekit-plugins-silero>=0.1.5
+livekit-plugins-turn-detector>=0.1.3
+livekit-plugins-openai>=0.5.0
+
+# Speech-to-Text (STT)
+faster-whisper>=1.0.3
+
+# Text-to-Speech (TTS)
+pyttsx3>=2.90
+piper-tts>=1.2.0
+edge-tts>=6.1.0
+pydub>=0.25.1
+
+# Language Model (LLM)
+ollama>=0.1.7
+
+# Audio handling
+soundfile>=0.12.1
+numpy>=1.26.4
+
+# Environment variables
+python-dotenv>=1.0.1
+
+# Logging
+loguru>=0.7.2
+
+# Type extensions
+typing-extensions>=4.9.0
+
+# ===== FastAPI Backend =====
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.5.0
+
+# ===== Frontend (HTML/JS - CDN based, no Python dependencies) =====
+# Note: Frontend uses LiveKit JS SDK loaded via CDN
+# - livekit-client (JS) - loaded from: https://unpkg.com/livekit-client/dist/livekit-client.umd.js
+# - Pure HTML/CSS/JavaScript - no Python packages needed
+
+# ===== Audio Processing Dependencies =====
+ffmpeg-python>=0.2.0  # Required by pydub for audio conversion

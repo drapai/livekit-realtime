@@ -1,0 +1,68 @@
+services:
+  # FastAPI Backend
+  fastapi:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: agent786-fastapi
+    working_dir: /app
+    ports:
+      - "8000:8000"
+    environment:
+      - LIVEKIT_URL=${LIVEKIT_URL:-wss://livekit.drap.ai}
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-devkey}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-secret}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-gemma3:1b}
+    command: uvicorn backend.api.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - ../backend/api:/app/backend/api
+      - ../backend/agent:/app/backend/agent
+      - ../config/.env.local:/app/config/.env.local
+    networks:
+      - agent786-network
+    restart: unless-stopped
+
+  # LiveKit Agent Worker
+  agent:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: agent786-agent
+    working_dir: /app
+    environment:
+      - LIVEKIT_URL=${LIVEKIT_URL:-wss://livekit.drap.ai}
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-devkey}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-secret}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-gemma3:1b}
+    command: python backend/agent/agent.py dev
+    volumes:
+      - ../backend/agent:/app/backend/agent
+      - ../config/.env.local:/app/config/.env.local
+    depends_on:
+      - fastapi
+    restart: unless-stopped
+    network_mode: host
+
+  # Next.js Frontend
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    container_name: agent786-frontend
+    ports:
+      - "3002:3002"
+    environment:
+      - NODE_ENV=development
+      - NEXT_PUBLIC_API_URL=https://agent007.drap.ai
+      - PORT=3002
+    volumes:
+      - ../frontend:/app
+      - /app/node_modules
+      - /app/.next
+    networks:
+      - agent786-network
+    restart: unless-stopped
+
+networks:
+  agent786-network:
+    driver: bridge

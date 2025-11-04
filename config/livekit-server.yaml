@@ -1,0 +1,21 @@
+port: 7880
+bind_addresses:
+  - "0.0.0.0"
+
+keys:
+  devkey: secret
+
+# Enable agent dispatch
+agent:
+  # Automatically dispatch agents to rooms
+  auto_dispatch: true
+
+# Room settings
+room:
+  auto_create: true
+  empty_timeout: 300
+  max_participants: 100
+
+# Logging
+logging:
+  level: info
