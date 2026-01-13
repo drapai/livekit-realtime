@@ -596,13 +596,18 @@ def prewarm(proc: JobProcess):
     logger.info("🔥 [PREWARM] Starting model preloading...")
     logger.info("=" * 60)
 
-    # Load VAD on GPU (force_cpu=False)
-    logger.info("🔥 [PREWARM] Loading VAD (Silero) model...")
+    # Load VAD on GPU with tuned parameters for faster response
+    logger.info("🔥 [PREWARM] Loading VAD (Silero) model with optimized settings...")
     vad_start = time.time()
     try:
-        proc.userdata["vad"] = silero.VAD.load(force_cpu=False)
+        proc.userdata["vad"] = silero.VAD.load(
+            force_cpu=False,  # Use GPU
+            min_silence_duration=0.4,  # Reduced from 0.55s for faster turn detection (~150ms faster)
+            min_speech_duration=0.05,  # Keep default - minimum speech to detect
+            activation_threshold=0.5,  # Keep default - sensitivity balance
+        )
         vad_time = time.time() - vad_start
-        logger.info(f"✅ [PREWARM] VAD loaded in {vad_time:.2f}s")
+        logger.info(f"✅ [PREWARM] VAD loaded in {vad_time:.2f}s (optimized: min_silence=0.4s)")
     except Exception as e:
         logger.error(f"❌ [PREWARM] VAD loading FAILED: {e}")
         raise
