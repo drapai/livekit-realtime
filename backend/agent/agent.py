@@ -20,6 +20,35 @@ from livekit.agents import (
 from livekit.agents.voice import room_io
 from livekit.plugins import silero, openai
 
+# ✅ MONKEY PATCH: Accept SOURCE_UNKNOWN tracks in addition to SOURCE_MICROPHONE
+# This fixes the issue where browser-published tracks have SOURCE_UNKNOWN
+from livekit.agents.voice.room_io import _input
+print("🔧 APPLYING MONKEY PATCHES FOR SOURCE_UNKNOWN SUPPORT...")
+_original_audio_init = _input._ParticipantAudioInputStream.__init__
+def _patched_audio_init(self, room, *, sample_rate, num_channels, noise_cancellation=None, pre_connect_audio_handler=None, frame_size_ms=50):
+    # Call original init first
+    _original_audio_init(self, room, sample_rate=sample_rate, num_channels=num_channels,
+                         noise_cancellation=noise_cancellation,
+                         pre_connect_audio_handler=pre_connect_audio_handler,
+                         frame_size_ms=frame_size_ms)
+    # Add SOURCE_UNKNOWN to accepted sources (in parent class _ParticipantInputStream)
+    self._accepted_sources.add(rtc.TrackSource.SOURCE_UNKNOWN)
+    print(f"✅ Patched audio input - accepted_sources: {[rtc.TrackSource.Name(s) for s in self._accepted_sources]}")
+_input._ParticipantAudioInputStream.__init__ = _patched_audio_init
+print("✅ Patch 1 applied: _ParticipantAudioInputStream.__init__")
+
+# ✅ MONKEY PATCH 2: Add debug logging to _on_track_available to see why tracks might be rejected
+_original_on_track_available = _input._ParticipantInputStream._on_track_available
+def _patched_on_track_available(self, track, publication, participant):
+    print(f"🎤 _on_track_available called: participant={participant.identity}, source={rtc.TrackSource.Name(publication.source)}")
+    print(f"   _participant_identity={self._participant_identity}, accepted_sources={[rtc.TrackSource.Name(s) for s in self._accepted_sources]}")
+    result = _original_on_track_available(self, track, publication, participant)
+    print(f"   Result: {'ACCEPTED' if result else 'REJECTED'}")
+    return result
+_input._ParticipantInputStream._on_track_available = _patched_on_track_available
+print("✅ Patch 2 applied: _ParticipantInputStream._on_track_available")
+print("🔧 MONKEY PATCHES COMPLETE!")
+
 # import your custom plugins
 from plugins.stt_faster_whisper import create as create_stt  # Using local Faster Whisper
 from plugins.tts_fallback import create as create_tts  # TTS with fallback: Edge → Flite
@@ -282,6 +311,20 @@ async def entrypoint(ctx: JobContext):
         raise
 
     logger.info("🚀 Starting agent session...")
+
+    # Wait for first human participant to join
+    first_participant = None
+    for participant in ctx.room.remote_participants.values():
+        if not participant.identity.startswith("agent"):
+            first_participant = participant
+            logger.info(f"✅ Found existing participant: {participant.identity}")
+            break
+
+    if not first_participant:
+        logger.info("⏳ Waiting for first participant to join...")
+        first_participant = await ctx.wait_for_participant()
+        logger.info(f"✅ First participant joined: {first_participant.identity}")
+
     await session.start(
         agent=Assistant(
             intake_schema=intake_schema,
@@ -289,29 +332,16 @@ async def entrypoint(ctx: JobContext):
             ctx_proc_userdata=ctx.proc.userdata
         ),
         room=ctx.room,
+        room_options=room_io.RoomOptions(
+            participant_identity=first_participant.identity,
+        ),
     )
-    logger.info("✅ Agent session started!")
+    logger.info(f"✅ Agent session started! Listening to: {first_participant.identity}")
 
-    # Replace the default audio input with our custom one that accepts SOURCE_UNKNOWN
-    custom_audio_input = CustomAudioInput(
-        room=ctx.room,
-        sample_rate=24000,
-        num_channels=1,
-        frame_size_ms=50,
-    )
-    session.input.audio = custom_audio_input
-    logger.info("✅ Custom audio input configured (accepts SOURCE_MICROPHONE and SOURCE_UNKNOWN)")
-
-    # Send initial greeting
-    initial_greeting = "Hello! Welcome to our dental clinic. I'm your AI assistant. How can I help you today?"
-    logger.info(f"Sending initial greeting: {initial_greeting}")
+    # Send initial greeting so user knows agent is ready
+    initial_greeting = "Hello! I'm ready to talk. Please speak now."
+    logger.info(f"Sending greeting: {initial_greeting}")
     await session.say(initial_greeting, allow_interruptions=True)
-
-    # Save greeting to transcript
-    try:
-        api_client.append_transcript(f"AGENT: {initial_greeting}")
-    except Exception as e:
-        logger.error(f"Failed to save greeting transcript: {e}")
 
     # Chat message handler
     @ctx.room.on("data_received")

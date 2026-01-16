@@ -1,19 +1,20 @@
 services:
-  # LiveKit Server (WebRTC media server)
-  livekit:
-    image: livekit/livekit-server:latest
-    container_name: agent786-livekit
-    command: --dev --bind 0.0.0.0
-    ports:
-      - "7880:7880"   # HTTP
-      - "7881:7881"   # WebRTC TCP
-      - "7882:7882/udp"  # WebRTC UDP (TURN)
-    environment:
-      - LIVEKIT_API_KEY=devkey
-      - LIVEKIT_API_SECRET=secret
-    restart: unless-stopped
-    networks:
-      - agent786-network
+  # NOTE: LiveKit Server is self-hosted at livekit.drap.ai
+  # Local LiveKit container is DISABLED for production
+  # livekit:
+  #   image: livekit/livekit-server:latest
+  #   container_name: agent786-livekit
+  #   command: --dev --bind 0.0.0.0
+  #   ports:
+  #     - "7880:7880"
+  #     - "7881:7881"
+  #     - "7882:7882/udp"
+  #   environment:
+  #     - LIVEKIT_API_KEY=devkey
+  #     - LIVEKIT_API_SECRET=secret
+  #   restart: unless-stopped
+  #   networks:
+  #     - agent786-network
 
   # PostgreSQL Database
   postgres:
@@ -44,13 +45,13 @@ services:
     environment:
       # Python path for imports
       - PYTHONPATH=/app
-      # LiveKit Configuration (using WSS through Nginx proxy for secure communication)
-      - LIVEKIT_URL=${LIVEKIT_URL:-wss://livekit.drap.ai}
-      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-devkey}
-      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-secret}
+      # LiveKit Configuration (PRODUCTION - self-hosted livekit.drap.ai)
+      - LIVEKIT_URL=wss://livekit.drap.ai
+      - LIVEKIT_API_KEY=devkey
+      - LIVEKIT_API_SECRET=secret
 
-      # Database Configuration
-      - DATABASE_URL=${DATABASE_URL:-postgresql://dentist:dentist_pass@localhost:5432/dentist_ai}
+      # Database Configuration (use container name for docker networking)
+      - DATABASE_URL=${DATABASE_URL:-postgresql://dentist:dentist_pass@agent786-postgres:5432/dentist_ai}
       - DB_POOL_SIZE=${DB_POOL_SIZE:-10}
       - DB_MAX_OVERFLOW=${DB_MAX_OVERFLOW:-20}
       - DB_POOL_RECYCLE=${DB_POOL_RECYCLE:-3600}
@@ -63,17 +64,24 @@ services:
 
       # CORS Configuration
       - ENV=${ENV:-development}
-      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:3001}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-https://agent007.drap.ai,http://localhost:3000,http://localhost:3001}
 
       # Logging
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
 
     command: uvicorn backend.api.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
     volumes:
       - ../backend:/app/backend
       - ../config/.env.local:/app/config/.env.local
     restart: unless-stopped
-    network_mode: host
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
     depends_on:
       postgres:
         condition: service_healthy
@@ -88,10 +96,10 @@ services:
     # GPU runtime for Faster Whisper and CUDA acceleration
     runtime: nvidia
     environment:
-      # LiveKit Configuration (using WSS through Nginx proxy for secure communication)
-      - LIVEKIT_URL=${LIVEKIT_URL:-wss://livekit.drap.ai}
-      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-devkey}
-      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-secret}
+      # LiveKit Configuration (PRODUCTION - self-hosted livekit.drap.ai)
+      - LIVEKIT_URL=wss://livekit.drap.ai
+      - LIVEKIT_API_KEY=devkey
+      - LIVEKIT_API_SECRET=secret
 
       # Database Configuration
       - DATABASE_URL=${DATABASE_URL:-postgresql://dentist:dentist_pass@localhost:5432/dentist_ai}
@@ -119,7 +127,7 @@ services:
 
       # CORS Configuration
       - ENV=${ENV:-development}
-      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:3001}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-https://agent007.drap.ai,http://localhost:3000,http://localhost:3001}
 
       # Logging
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
@@ -139,7 +147,7 @@ services:
       postgres:
         condition: service_healthy
       fastapi:
-        condition: service_started
+        condition: service_healthy
     restart: unless-stopped
     network_mode: host
     deploy:
@@ -158,7 +166,8 @@ services:
     container_name: agent786-frontend
     environment:
       - NODE_ENV=development
-      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-https://agent007.drap.ai}
+      - NEXT_PUBLIC_API_URL=https://agent007.drap.ai
+      - NEXT_PUBLIC_LIVEKIT_URL=wss://livekit.drap.ai
       - PORT=3001
     volumes:
       - ../frontend:/app

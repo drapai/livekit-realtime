@@ -20,6 +20,7 @@ interface UseLiveKitReturn {
   // Speaking state
   isSpeaking: boolean;
   audioLevel: number;
+  agentAudioLevel: number; // Agent's audio level for lip sync
 
   // Transcripts
   transcripts: TranscriptMessage[];
@@ -44,6 +45,7 @@ export function useLiveKit(): UseLiveKitReturn {
   const [room, setRoom] = useState<LiveKit.Room | null>(null);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [audioLevel, setAudioLevel] = useState(0);
+  const [agentAudioLevel, setAgentAudioLevel] = useState(0);
   const [transcripts, setTranscripts] = useState<TranscriptMessage[]>([]);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -52,6 +54,14 @@ export function useLiveKit(): UseLiveKitReturn {
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animationFrameRef = useRef<number | null>(null);
+  const currentAudioTrackRef = useRef<LiveKit.LocalAudioTrack | null>(null);
+  const roomRef = useRef<LiveKit.Room | null>(null);
+  const pendingRemoteTrackRef = useRef<LiveKit.RemoteAudioTrack | null>(null); // Store agent track for later monitoring
+
+  // Agent audio monitoring refs
+  const agentAudioContextRef = useRef<AudioContext | null>(null);
+  const agentAnalyserRef = useRef<AnalyserNode | null>(null);
+  const agentAnimationFrameRef = useRef<number | null>(null);
 
   // Generate userId on client side only (prevents hydration mismatch)
   useEffect(() => {
@@ -93,19 +103,32 @@ export function useLiveKit(): UseLiveKitReturn {
   };
 
   // Monitor audio level
-  const monitorAudioLevel = useCallback((track: LiveKit.LocalAudioTrack | LiveKit.RemoteAudioTrack) => {
+  const monitorAudioLevel = useCallback(async (track: LiveKit.LocalAudioTrack | LiveKit.RemoteAudioTrack) => {
     if (typeof window === 'undefined') return;
 
     try {
+      console.log('🎵 Starting audio level monitoring for track:', track.sid);
+
       const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
       const audioContext = new AudioContext();
+
+      // ✅ CRITICAL FIX: AWAIT AudioContext resume (browser autoplay policy)
+      if (audioContext.state === 'suspended') {
+        console.warn('⚠️ AudioContext is suspended, resuming...');
+        await audioContext.resume();
+        console.log('✅ AudioContext resumed successfully');
+      }
+
       const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 256;
+      analyser.smoothingTimeConstant = 0.8; // Smooth out the audio level changes
+
       const mediaStreamSource = audioContext.createMediaStreamSource(
         new MediaStream([track.mediaStreamTrack])
       );
 
       mediaStreamSource.connect(analyser);
-      analyser.fftSize = 256;
+      console.log('✅ Audio analyser connected to track');
 
       audioContextRef.current = audioContext;
       analyserRef.current = analyser;
@@ -121,12 +144,19 @@ export function useLiveKit(): UseLiveKitReturn {
         const percentage = Math.min(100, (average / 128) * 100);
 
         setAudioLevel(percentage);
+
+        // Log only when significant audio detected (for debugging)
+        if (percentage > 5) {
+          console.log('🔊 Audio level:', percentage.toFixed(1) + '%');
+        }
+
         animationFrameRef.current = requestAnimationFrame(updateLevel);
       };
 
       updateLevel();
+      console.log('✅ Audio level monitoring started');
     } catch (err) {
-      console.error('Failed to monitor audio level:', err);
+      console.error('❌ Failed to monitor audio level:', err);
     }
   }, []);
 
@@ -143,6 +173,144 @@ export function useLiveKit(): UseLiveKitReturn {
     analyserRef.current = null;
     setAudioLevel(0);
   }, []);
+
+  // Monitor AGENT audio level (for lip sync)
+  const monitorAgentAudioLevel = useCallback(async (track: LiveKit.RemoteAudioTrack) => {
+    if (typeof window === 'undefined') return;
+
+    try {
+      console.log('🤖 Starting AGENT audio level monitoring for lip sync:', track.sid);
+
+      const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
+      const audioContext = new AudioContext();
+
+      if (audioContext.state === 'suspended') {
+        await audioContext.resume();
+      }
+
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 256;
+      analyser.smoothingTimeConstant = 0.7;
+
+      const mediaStreamSource = audioContext.createMediaStreamSource(
+        new MediaStream([track.mediaStreamTrack])
+      );
+
+      mediaStreamSource.connect(analyser);
+      console.log('✅ Agent audio analyser connected');
+
+      agentAudioContextRef.current = audioContext;
+      agentAnalyserRef.current = analyser;
+
+      const bufferLength = analyser.frequencyBinCount;
+      const dataArray = new Uint8Array(bufferLength);
+
+      const updateAgentLevel = () => {
+        if (!agentAnalyserRef.current) return;
+
+        analyser.getByteFrequencyData(dataArray);
+        const average = dataArray.reduce((a, b) => a + b) / bufferLength;
+        const percentage = Math.min(100, (average / 128) * 100);
+
+        setAgentAudioLevel(percentage);
+
+        agentAnimationFrameRef.current = requestAnimationFrame(updateAgentLevel);
+      };
+
+      updateAgentLevel();
+      console.log('✅ Agent lip sync monitoring started');
+    } catch (err) {
+      console.error('❌ Failed to monitor agent audio level:', err);
+    }
+  }, []);
+
+  // Stop agent audio monitoring
+  const stopAgentAudioMonitoring = useCallback(() => {
+    if (agentAnimationFrameRef.current) {
+      cancelAnimationFrame(agentAnimationFrameRef.current);
+      agentAnimationFrameRef.current = null;
+    }
+    if (agentAudioContextRef.current) {
+      agentAudioContextRef.current.close();
+      agentAudioContextRef.current = null;
+    }
+    agentAnalyserRef.current = null;
+    setAgentAudioLevel(0);
+  }, []);
+
+  // 🎧 DEVICE CHANGE HANDLER - Recreate audio track when Bluetooth/headset is connected
+  const handleDeviceChange = useCallback(async () => {
+    console.log('🔄 Audio device change detected!');
+
+    // Only handle if we're connected and speaking
+    if (!roomRef.current || connectionStatus !== 'connected' || !isSpeaking) {
+      console.log('⏭️ Skipping device change handling - not in active call');
+      return;
+    }
+
+    try {
+      // List available devices
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const audioInputs = devices.filter(d => d.kind === 'audioinput');
+      console.log('📱 Available audio inputs:', audioInputs.map(d => d.label || d.deviceId));
+
+      // Stop current audio monitoring
+      stopAudioMonitoring();
+
+      // Unpublish old track if exists
+      if (currentAudioTrackRef.current) {
+        console.log('🛑 Unpublishing old audio track...');
+        await roomRef.current.localParticipant.unpublishTrack(currentAudioTrackRef.current);
+        currentAudioTrackRef.current.stop();
+        currentAudioTrackRef.current = null;
+      }
+
+      // Small delay to let the new device initialize
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      // Create new track with default (new) device
+      console.log('🎤 Creating new audio track with updated device...');
+      const newTrack = await LiveKit.createLocalAudioTrack({
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      });
+
+      // Publish new track
+      await roomRef.current.localParticipant.publishTrack(newTrack, {
+        source: LiveKit.Track.Source.Microphone,
+        name: 'microphone',
+      });
+
+      currentAudioTrackRef.current = newTrack;
+      console.log('✅ New audio track published with updated device');
+
+      // Start monitoring new track
+      await monitorAudioLevel(newTrack);
+
+      // Get the new device name
+      const newDevices = await navigator.mediaDevices.enumerateDevices();
+      const activeInput = newDevices.find(d => d.kind === 'audioinput' && d.deviceId === 'default');
+      const deviceName = activeInput?.label || 'New audio device';
+
+      addTranscript('System', `🎧 Switched to: ${deviceName}`);
+    } catch (err) {
+      console.error('❌ Failed to switch audio device:', err);
+      setError('Failed to switch audio device. Please try reconnecting.');
+    }
+  }, [connectionStatus, isSpeaking, stopAudioMonitoring, monitorAudioLevel, addTranscript]);
+
+  // 🎧 Setup device change listener
+  useEffect(() => {
+    if (typeof window === 'undefined' || !navigator.mediaDevices) return;
+
+    console.log('🎧 Setting up audio device change listener...');
+    navigator.mediaDevices.addEventListener('devicechange', handleDeviceChange);
+
+    return () => {
+      navigator.mediaDevices.removeEventListener('devicechange', handleDeviceChange);
+    };
+  }, [handleDeviceChange]);
 
   // Setup room event listeners
   const setupRoomEvents = useCallback((room: LiveKit.Room) => {
@@ -165,16 +333,48 @@ export function useLiveKit(): UseLiveKitReturn {
 
     // Track subscribed
     room.on(LiveKit.RoomEvent.TrackSubscribed, (track, publication, participant) => {
-      console.log('Track subscribed:', track.kind, 'from', participant.identity);
+      console.log('🎧 Track subscribed:', track.kind, 'from', participant.identity);
 
       if (track.kind === LiveKit.Track.Kind.Audio) {
+        console.log('🔊 Processing audio track from', participant.identity);
+
         const audioElement = track.attach();
         audioElement.volume = currentVolume;
-        document.body.appendChild(audioElement);
+        audioElement.autoplay = true;
+        audioElement.playsInline = true;
 
-        if (track instanceof LiveKit.RemoteAudioTrack) {
-          monitorAudioLevel(track);
-        }
+        // ✅ CRITICAL: Add ID for debugging
+        audioElement.id = `audio-${participant.identity}`;
+
+        // Explicitly play the audio
+        audioElement.play().then(() => {
+          console.log('✅ Audio playback started successfully for', participant.identity);
+          console.log('   - Volume:', currentVolume);
+          console.log('   - Element ID:', audioElement.id);
+
+          // ✅ Store remote track for monitoring later (when user clicks Start Speaking)
+          // AudioContext needs user gesture to resume, so we defer monitoring
+          if (track instanceof LiveKit.RemoteAudioTrack) {
+            console.log('🎵 Storing remote track for deferred monitoring (waiting for user gesture)');
+            pendingRemoteTrackRef.current = track;
+
+            // ✅ If from agent, also start agent audio monitoring for lip sync
+            if (participant.identity.startsWith('agent-')) {
+              console.log('🤖 Agent track detected, will monitor for lip sync after user gesture');
+            }
+          }
+        }).catch((error) => {
+          console.error('❌ Audio playback failed:', error);
+          console.warn('⚠️ This might be due to browser autoplay policy. User interaction may be required.');
+
+          // ✅ Still store the track for later monitoring
+          if (track instanceof LiveKit.RemoteAudioTrack) {
+            console.log('⚠️ Storing remote track despite playback failure');
+            pendingRemoteTrackRef.current = track;
+          }
+        });
+
+        document.body.appendChild(audioElement);
       }
     });
 
@@ -266,6 +466,7 @@ export function useLiveKit(): UseLiveKitReturn {
 
       console.log('Connected successfully');
       setRoom(newRoom);
+      roomRef.current = newRoom; // Store in ref for device change handler
       setConnectionStatus('connected');
       addTranscript('System', `Connected to your private room: ${tokenData.room_name}`);
 
@@ -283,6 +484,9 @@ export function useLiveKit(): UseLiveKitReturn {
           addTranscript('System', `${participant.identity} is already in the room`);
         }
       });
+
+      // Mic stays OFF - user will click "Start Speaking" when ready
+      addTranscript('System', '🎤 Click "Start Speaking" to enable microphone');
     } catch (err) {
       console.error('Connection failed:', err);
       setError(err instanceof Error ? err.message : 'Connection failed');
@@ -300,11 +504,17 @@ export function useLiveKit(): UseLiveKitReturn {
       setRoom(null);
     }
 
+    // Clear refs
+    roomRef.current = null;
+    currentAudioTrackRef.current = null;
+    pendingRemoteTrackRef.current = null;
+
     setConnectionStatus('disconnected');
     setIsSpeaking(false);
     stopAudioMonitoring();
+    stopAgentAudioMonitoring(); // ✅ Also stop agent lip sync monitoring
     addTranscript('System', 'Disconnected from room');
-  }, [room, addTranscript, stopAudioMonitoring]);
+  }, [room, addTranscript, stopAudioMonitoring, stopAgentAudioMonitoring]);
 
   // Toggle speaking (microphone)
   const toggleSpeaking = useCallback(async () => {
@@ -327,8 +537,25 @@ export function useLiveKit(): UseLiveKitReturn {
           name: 'microphone',
         });
 
+        currentAudioTrackRef.current = localTrack; // Store in ref for device change handler
         console.log('Microphone track published with source: Microphone');
-        monitorAudioLevel(localTrack);
+
+        // ✅ FIX: Now we have user gesture, so start monitoring for BOTH tracks
+        // First, monitor our local mic
+        await monitorAudioLevel(localTrack);
+
+        // ✅ Also start monitoring pending remote track (agent) if exists
+        // This is the first user gesture, so AudioContext can now resume
+        if (pendingRemoteTrackRef.current) {
+          console.log('🎵 Now monitoring pending agent track (user gesture received)');
+          await monitorAudioLevel(pendingRemoteTrackRef.current);
+
+          // ✅ Start agent lip sync monitoring separately
+          console.log('🤖 Starting agent lip sync monitoring...');
+          await monitorAgentAudioLevel(pendingRemoteTrackRef.current);
+
+          pendingRemoteTrackRef.current = null; // Clear after monitoring started
+        }
 
         setIsSpeaking(true);
         addTranscript('You', 'Started speaking');
@@ -336,6 +563,7 @@ export function useLiveKit(): UseLiveKitReturn {
         console.log('Stopping microphone...');
         await room.localParticipant.setMicrophoneEnabled(false);
 
+        currentAudioTrackRef.current = null; // Clear ref
         stopAudioMonitoring();
         setIsSpeaking(false);
         addTranscript('You', 'Stopped speaking');
@@ -416,6 +644,7 @@ export function useLiveKit(): UseLiveKitReturn {
     room,
     isSpeaking,
     audioLevel,
+    agentAudioLevel,
     transcripts,
     chatMessages,
     sendChatMessage,
